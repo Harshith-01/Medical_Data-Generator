@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-dotenv
+google-generativeai
+requests
+beautifulsoup4
+pandas
+python-multipart
+uuid
