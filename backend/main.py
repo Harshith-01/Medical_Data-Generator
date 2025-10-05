@@ -21,7 +21,7 @@ app = FastAPI()
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000","https://medical-data-generator-liart.vercel.app"], # Or your specific frontend origin
+    allow_origins=["http://localhost:3000"], # Or your specific frontend origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -168,30 +168,26 @@ You MUST output a single, valid JSON array containing exactly 3 patient profile 
         print(f"An unexpected error occurred: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred while generating profiles: {e}")
 
-# --- CHANGE: New helper function to clean the pre_existing_conditions column ---
 def clean_pre_existing_conditions(conditions):
-    """
-    Normalizes the 'pre_existing_conditions' field to a consistent, comma-separated string.
-    Handles various inconsistent formats like [], ['Condition'], or "['Condition']".
-    """
-    if pd.isna(conditions) or conditions in ["[]", ""]:
-        return "None"
+    # First, check for null/NaN values
+    if pd.isna(conditions):
+        return 'None'
+
+    # If it's a list, join it into a string
+    if isinstance(conditions, list):
+        if not conditions:  # Handle empty list
+            return 'None'
+        # Join list items into a comma-separated string
+        return ', '.join(map(str, conditions))
+
+    # If it's already a string, check if it's an empty representation
+    if isinstance(conditions, str):
+        conditions = conditions.strip()
+        if conditions in ["[]", "None", ""]:
+            return 'None'
     
-    # Try to evaluate the string if it looks like a list
-    try:
-        # This handles cases like "['Heart disease', 'Diabetes']"
-        from ast import literal_eval
-        evaluated = literal_eval(conditions)
-        if isinstance(evaluated, list):
-            return ', '.join(evaluated) if evaluated else "None"
-    except (ValueError, SyntaxError):
-        # It's not a list-like string, so treat it as a plain string
-        pass
-    
-    # Clean up string if it still has brackets or quotes
-    cleaned_conditions = str(conditions).strip("[]'\" ")
-    
-    return cleaned_conditions if cleaned_conditions else "None"
+    # Return the original value if it's not a list or empty string
+    return conditions
 
 @app.post("/process")
 async def process_data(
@@ -214,6 +210,14 @@ async def process_data(
     
     profiles = generate_profiles_with_gemini(disease_name, scraped_text)
 
+        # --- START: APPLY THE FIX HERE ---
+    df_new = pd.DataFrame(profiles)
+    
+    # Ensure the column exists before trying to apply the function
+    if 'pre_existing_conditions' in df_new.columns:
+        df_new['pre_existing_conditions'] = df_new['pre_existing_conditions'].apply(clean_pre_existing_conditions)
+    # --- END: APPLY THE FIX HERE ---
+    
     new_rows = []
     for profile in profiles:
         row = {
