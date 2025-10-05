@@ -132,7 +132,7 @@ function ColorlibStepIcon(props) {
   );
 }
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = 'https://medical-data-generator.onrender.com';
 
 function App() {
   const [mode, setMode] = useState('light');
