@@ -63,14 +63,24 @@ def scrape_text_from_url(url: str) -> str:
         raise HTTPException(status_code=400, detail=f"Error fetching URL: {e}")
 
 def clean_pre_existing_conditions(conditions):
-    if pd.isna(conditions):
+    # Handle NaN or None
+    if isinstance(conditions, (float, int)) and pd.isna(conditions):
         return 'None'
-    if isinstance(conditions, list):
+    
+    # Handle list/array
+    if isinstance(conditions, (list, tuple)):
         return ', '.join(map(str, conditions)) if conditions else 'None'
+    
+    # Handle string
     if isinstance(conditions, str):
         conditions = conditions.strip()
-        return 'None' if conditions in ["[]", "None", ""] else conditions
-    return conditions
+        return 'None' if conditions in ["[]", "None", "", "nan"] else conditions
+    
+    # Handle numpy arrays or pandas Series gracefully
+    if hasattr(conditions, '__iter__') and not isinstance(conditions, (str, bytes)):
+        return ', '.join(map(str, list(conditions))) if len(conditions) > 0 else 'None'
+    
+    return 'None'
 
 def generate_profiles_with_gemini(disease_name: str, context: str) -> list:
     # Using a standard, reliable model name
