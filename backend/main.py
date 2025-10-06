@@ -21,7 +21,7 @@ app = FastAPI()
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Your frontend origin
+    allow_origins=["http://localhost:3000","https://medical-data-generator-liart.vercel.app"], # Your frontend origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
