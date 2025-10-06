@@ -74,7 +74,7 @@ def clean_pre_existing_conditions(conditions):
 
 def generate_profiles_with_gemini(disease_name: str, context: str) -> list:
     # Using a standard, reliable model name
-    model = genai.GenerativeModel("gemini-2.5-flash-latest")
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     # --- REVISED AND SIMPLIFIED PROMPT ---
     prompt = f"""
