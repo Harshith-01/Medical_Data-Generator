@@ -21,7 +21,7 @@ app = FastAPI()
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Or your specific frontend origin
+    allow_origins=["http://localhost:3000"], # Your frontend origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,7 +29,7 @@ app.add_middleware(
 
 PROCESSED_FILES = {}
 
-# --- CSV Columns (No Change) ---
+# --- CSV Columns ---
 CSV_COLUMNS = [
     'disease', 'symptom_summary', 'gender', 'age', 'ethnicity', 'severity_level', 'duration_days',
     'smoking_status', 'alcohol_consumption', 'family_history_of_disease', 'pre_existing_conditions', 'occupation_exposure',
@@ -51,9 +51,8 @@ CSV_COLUMNS = [
     'link'
 ]
 
-# --- Helper and Gemini Functions (No Change) ---
+# --- Helper Functions ---
 def scrape_text_from_url(url: str) -> str:
-    """Scrapes textual content from a given URL."""
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         response.raise_for_status()
@@ -63,213 +62,146 @@ def scrape_text_from_url(url: str) -> str:
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Error fetching URL: {e}")
 
+def clean_pre_existing_conditions(conditions):
+    if pd.isna(conditions):
+        return 'None'
+    if isinstance(conditions, list):
+        return ', '.join(map(str, conditions)) if conditions else 'None'
+    if isinstance(conditions, str):
+        conditions = conditions.strip()
+        return 'None' if conditions in ["[]", "None", ""] else conditions
+    return conditions
+
 def generate_profiles_with_gemini(disease_name: str, context: str) -> list:
-    """
-    Generates patient profiles using Gemini with a robust, example-driven prompt and dedicated JSON mode.
-    """
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # Using a standard, reliable model name
+    model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
+    # --- REVISED AND SIMPLIFIED PROMPT ---
     prompt = f"""
-You are a meticulous clinical data scientist AI. Your primary mission is to generate a diverse cohort of 3 clinically plausible, hypothetical patient profiles.
+    You are a meticulous clinical data scientist AI. Your mission is to generate a diverse cohort of 3 clinically plausible, hypothetical patient profiles based **exclusively** on the provided disease context.
 
-**CORE MANDATE:**
-Base your entire output **exclusively** on the provided `CONTEXT` about the disease. Do not use any outside knowledge.
+    **CRITICAL RULE: AVOIDING EXAMPLE BIAS**
+    The `EXAMPLE` is for showing the required JSON structure only. For the `ACTUAL CONTEXT`, you MUST evaluate **every single field** in the `SCHEMA OF ALL POSSIBLE FIELDS` and populate any that are mentioned or logically implied. Your goal is to extract as much relevant data as possible.
 
-** CRITICAL RULE: AVOIDING EXAMPLE BIAS**
-The `EXAMPLE` section below is **only for showing the required JSON structure and tone**. The specific fields populated in the example (e.g., `fever`, `rash`) are NOT a restrictive list. For the `ACTUAL CONTEXT`, you MUST evaluate **every single field** listed in the `SCHEMA OF ALL POSSIBLE FIELDS` and populate any that are mentioned or logically implied in the text. Your goal is to extract as much relevant data as possible into the full schema, not to mimic the example's limited fields.
-    
-** SCHEMA OF ALL POSSIBLE FIELDS**
-This is the complete list of fields you can populate. Check the context for evidence for each one.
-{str(CSV_COLUMNS)}
+    **SCHEMA OF ALL POSSIBLE FIELDS:**
+    {str(CSV_COLUMNS)}
 
-### **[CRITICAL QUALITY CHECK]**
+    **OUTPUT FORMAT:**
+    You MUST output a single, valid JSON array containing exactly 3 patient profile objects. Do not include any other text or markdown.
 
--   **AVOID LAZY OUTPUTS:** You must diligently fill all relevant fields based on the instructions above.
--   **Excessive `null` values are a failure.** Profiles where common vitals, labs, and symptoms are `null` are incorrect.
--   **Your primary goal is to create complete and plausible profiles.**
+    ---
+    ### GUIDING PRINCIPLES
+    1.  **Clinical Diversity:** The 3 profiles MUST be distinct. Vary demographics (`age`, `gender`, `ethnicity`) and `severity_level` ('Mild', 'Moderate', 'Severe').
+    2.  **Symptom Coherence:** All data must align with the `severity_level`. A 'Severe' case should have more pronounced symptoms/vitals.
+    3.  **Handling Ambiguity:** If the context is qualitative (e.g., "high fever"), generate a plausible number (e.g., `"body_temperature": 39.5`). If not mentioned, use `null`.
 
-**OUTPUT FORMAT:**
-You MUST output a single, valid JSON array containing exactly 3 patient profile objects. Do not output any other text, explanations, or markdown formatting (like ```json).
+    ---
+    ### DETAILED FIELD INSTRUCTIONS
+    -   **For all symptom columns (e.g., 'fever', 'cough'):** The output value must be a single floating-point number between 0.0 and 1.0, representing the probability of the symptom based on the context and severity. If a symptom is not mentioned, its probability MUST be `0.0`.
+    -   **`pre_existing_conditions`:** Output as a JSON array of strings, or `null` if none.
 
----
-
-### GUIDING PRINCIPLES FOR PROFILE GENERATION
-
-1.  **Clinical Diversity:** The 3 profiles MUST be distinct. Intentionally vary demographics (`age`, `gender`, `ethnicity`) and, most importantly, `severity_level`. Use a logical range of severities (e.g., 'Mild', 'Moderate', 'Severe', 'Asymptomatic' if context supports it).
-2.  **Symptom Coherence:** The presence and probability of symptoms, as well as lab/vital values, MUST align logically with the profile's `severity_level`. A 'Severe' case should present with more pronounced or a wider range of symptoms than a 'Mild' case, based on the context.
-3.  **Plausible Narratives:** The `symptom_summary` should be a brief, realistic clinical narrative that logically weaves together the key data points of the profile.
-4.  **Handling Ambiguity:** If the context mentions a value qualitatively (e.g., "high fever," "elevated WBC count"), generate a clinically plausible number that fits that description (e.g., `"body_temperature": 39.5`, `"wbc_count": 18.5`). If there is absolutely no mention, use `null`.
-
----
-
-### DETAILED FIELD INSTRUCTIONS
-
--   **`symptoms` (e.g., `fever`, `cough`):**
-    -   Use the format `{{"value": boolean, "probability": float}}`.
-    -   The probability MUST reflect how common that symptom is according to the context.
-    -   If a symptom is NOT mentioned in the context, its probability MUST be `0.0`.
-    -   **Relevant Negatives:** If the context explicitly states a symptom is *absent* or rare (e.g., "cough is uncommon"), set its `value` to `false` and `probability` to a low number (e.g., `0.05`). This is critical data.
--   **`vitals` & `labs`:** Use plausible numbers based on the context and the profile's severity. Otherwise, `null`.
--   **`history` & `risk_factors`:** Only populate fields like `smoking_status` if the context identifies them as relevant risk factors. Otherwise, `null`.
-
----
-
+    ---
     ### EXAMPLE (FOR FORMATTING REFERENCE ONLY)
-    **Hypothetical Context:** "Aqua-fever causes a blue skin rash and a dry cough. A low-grade fever is common. Shortness of breath is notably absent."
-    **Expected JSON Output Structure:**
     ```json
     [
       {{
         "disease": "Aqua-fever",
         "symptom_summary": "A 42-year-old female presents with a characteristic blue skin rash and a persistent dry cough.",
         "gender": "Female",
-        "age": "42",
+        "age": 42,
         "severity_level": "Moderate",
         "body_temperature": 38.1,
-        "rash": {{"value": true, "probability": 1.0}},
-        "dry_cough": {{"value": true, "probability": 0.95}},
-        "shortness_of_breath": {{"value": false, "probability": 0.05}},
-        "chest_pain": {{"value": false, "probability": 0.0}}
+        "rash": 1.0,
+        "dry_cough": 0.95,
+        "shortness_of_breath": 0.05,
+        "chest_pain": 0.0
       }}
     ]
     ```
-    (Your final output must contain 3 diverse profiles in the array, using the full schema.)
-
     ---
     **ACTUAL CONTEXT TO USE:**
     **Disease:** "{disease_name}"
     **Text:**
-    {context[:20000]}
-    ---
+    {context[:30000]}
     """
     try:
         response = model.generate_content(
             prompt,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.6
-            },
-            safety_settings={
-                'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE',
-                'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
-                'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE',
-                'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE',
-            }
+            generation_config={"response_mime_type": "application/json", "temperature": 0.7},
+            safety_settings={'HARM_CATEGORY_HARASSMENT': 'BLOCK_NONE', 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_NONE',
+                             'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_NONE', 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_NONE'}
         )
-        
         return json.loads(response.text)
-
-    except json.JSONDecodeError as e:
-        print("--- Gemini text that failed JSON parsing ---")
-        print(response.text if 'response' in locals() else "Response object not available.")
-        print("------------------------------------------")
-        raise HTTPException(status_code=500, detail=f"Failed to decode JSON from Gemini response: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred while generating profiles: {e}")
+        # Simplified error handling for brevity
+        print(f"An unexpected error occurred during Gemini call: {e}")
+        if 'response' in locals():
+            print("--- Gemini Response Text ---")
+            print(response.text)
+        raise HTTPException(status_code=500, detail="An error occurred while generating profiles.")
 
-def clean_pre_existing_conditions(conditions):
-    # First, check for null/NaN values
-    if pd.isna(conditions):
-        return 'None'
-
-    # If it's a list, join it into a string
-    if isinstance(conditions, list):
-        if not conditions:  # Handle empty list
-            return 'None'
-        # Join list items into a comma-separated string
-        return ', '.join(map(str, conditions))
-
-    # If it's already a string, check if it's an empty representation
-    if isinstance(conditions, str):
-        conditions = conditions.strip()
-        if conditions in ["[]", "None", ""]:
-            return 'None'
-    
-    # Return the original value if it's not a list or empty string
-    return conditions
-
+# --- API Endpoints ---
 @app.post("/process")
 async def process_data(
     disease_name: str = Form(...),
     url: str = Form(...),
     file: UploadFile = File(...)
 ):
-    """
-    Processes data from a URL, generates new patient profiles, cleans the data,
-    and appends them to the content of the uploaded CSV file.
-    """
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV.")
 
-    df_base = pd.read_csv(file.file)
+    try:
+        df_base = pd.read_csv(file.file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse uploaded CSV: {e}")
 
     scraped_text = scrape_text_from_url(url)
     if not scraped_text:
         raise HTTPException(status_code=400, detail="Could not extract text from the URL.")
-    
+
     profiles = generate_profiles_with_gemini(disease_name, scraped_text)
+    if not profiles:
+         raise HTTPException(status_code=500, detail="Failed to generate new profiles.")
 
-        # --- START: APPLY THE FIX HERE ---
+    # --- EFFICIENT DATA PROCESSING ---
+    # 1. Create DataFrame directly from the AI's JSON output
     df_new = pd.DataFrame(profiles)
-    
-    # Ensure the column exists before trying to apply the function
-    if 'pre_existing_conditions' in df_new.columns:
-        df_new['pre_existing_conditions'] = df_new['pre_existing_conditions'].apply(clean_pre_existing_conditions)
-    # --- END: APPLY THE FIX HERE ---
-    
-    new_rows = []
-    for profile in profiles:
-        row = {
-            col: (item['probability'] if isinstance(item := profile.get(col), dict) and 'probability' in item else item)
-            for col in CSV_COLUMNS if col != 'link'
-        }
-        row['link'] = url
-        new_rows.append(row)
 
-    df_new = pd.DataFrame(new_rows)
-    
-    # --- CHANGE: Apply the cleaning function to the new data ---
+    # 2. Add the source link to each new row
+    df_new['link'] = url
+
+    # 3. Clean the 'pre_existing_conditions' column (do this only once)
     if 'pre_existing_conditions' in df_new.columns:
         df_new['pre_existing_conditions'] = df_new['pre_existing_conditions'].apply(clean_pre_existing_conditions)
 
-
-    # Ensure columns match perfectly before concatenating
+    # 4. Ensure column order matches the base file before concatenation
     df_new = df_new.reindex(columns=df_base.columns)
 
+    # 5. Combine the old and new data
     combined_df = pd.concat([df_base, df_new], ignore_index=True)
-    
-    # --- CHANGE: Apply the cleaning function to the entire combined DataFrame for full consistency ---
-    if 'pre_existing_conditions' in combined_df.columns:
-        combined_df['pre_existing_conditions'] = combined_df['pre_existing_conditions'].apply(clean_pre_existing_conditions)
-
+    # -----------------------------------
 
     file_id = str(uuid.uuid4())
     PROCESSED_FILES[file_id] = combined_df.to_csv(index=False)
 
     return {"message": "Processing complete! Click 'Download Result' to get your file.", "file_id": file_id}
 
-
 @app.get("/download/{file_id}")
 async def download_processed_file(file_id: str):
-    """Downloads the processed CSV file."""
     if file_id not in PROCESSED_FILES:
         raise HTTPException(status_code=404, detail="File not found or has expired.")
-    
-    csv_data = PROCESSED_FILES.pop(file_id) # Use pop to remove after download
+
+    csv_data = PROCESSED_FILES.pop(file_id)
     response = StreamingResponse(iter([csv_data]), media_type="text/csv")
     response.headers["Content-Disposition"] = f"attachment; filename=updated_data_{file_id[:8]}.csv"
     return response
 
-
 @app.get("/template")
 async def download_template():
-    """Serves an empty CSV file with only the required headers."""
     df_template = pd.DataFrame(columns=CSV_COLUMNS)
-
     stream = StringIO()
     df_template.to_csv(stream, index=False)
-
     response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
     response.headers["Content-Disposition"] = "attachment; filename=template.csv"
     return response
+
